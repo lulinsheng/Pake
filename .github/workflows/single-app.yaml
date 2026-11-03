@@ -380,7 +380,7 @@ jobs:
 
           $args += "--width", $env:INPUT_WIDTH
           $args += "--height", $env:INPUT_HEIGHT
-
+          $args += "--inject", "assets\pake-nav.js"
           $args += "--targets", "x64"
 
           node dist/cli.js $args
