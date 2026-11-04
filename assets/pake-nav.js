@@ -1,13 +1,48 @@
 /* ============================================================
- * Pake 导航增强脚本（后退 / 前进 / 刷新）
- * 用法：Pake 构建时 --inject 此文件，编译期嵌入应用，运行时注入每个页面。
+ * Pake 导航增强脚本 v2（后退 / 前进 / 刷新 / 回首页）
+ * 不再依赖 Tauri invoke，纯浏览器历史 + 三重兜底
  * ============================================================ */
 (function () {
   'use strict';
 
-  var GUARD = '__pakeNavInstalled__';
+  var GUARD = '__pakeNavInstalledV2__';
   if (window[GUARD]) return;
   window[GUARD] = true;
+
+  /* ---------------- 基础：首页地址与自管访问栈 ---------------- */
+
+  var HOME = location.href.split('#')[0];
+  var STACK_KEY = '__pakeNavStackV2__';
+
+  function readStack() {
+    try {
+      var raw = sessionStorage.getItem(STACK_KEY);
+      var arr = raw ? JSON.parse(raw) : [];
+      return Object.prototype.toString.call(arr) === '[object Array]' ? arr : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function writeStack(arr) {
+    try {
+      sessionStorage.setItem(STACK_KEY, JSON.stringify(arr.slice(-60)));
+    } catch (e) {
+      /* 忽略 */
+    }
+  }
+
+  function pushHash(h) {
+    var s = readStack();
+    if (s[s.length - 1] === h) return;
+    s.push(h);
+    writeStack(s);
+  }
+
+  pushHash(location.hash);
+  window.addEventListener('hashchange', function () {
+    pushHash(location.hash);
+  });
 
   /* ---------------- 1. 同源 window.open 改为同窗导航 ---------------- */
 
@@ -73,30 +108,42 @@
     true
   );
 
-  /* ---------------- 3. 导航执行：优先调 Pake 原生 ---------------- */
+  /* ---------------- 3. 导航：纯浏览器历史 + 三重兜底 ---------------- */
 
-  function invokeNative(action) {
-    try {
-      var t = window.__TAURI__;
-      if (t && t.core && typeof t.core.invoke === 'function') {
-        t.core.invoke('webview_navigate', { action: action });
-        return true;
+  function fallbackBack() {
+    var s = readStack();
+    if (s.length >= 2) {
+      s.pop();
+      var prev = s[s.length - 1];
+      writeStack(s);
+      if (prev !== undefined && prev !== location.hash) {
+        location.hash = prev;
+        return;
       }
-      if (t && typeof t.invoke === 'function') {
-        t.invoke('webview_navigate', { action: action });
-        return true;
-      }
-    } catch (e) {
-      /* 静默降级 */
     }
-    return false;
+    location.replace(HOME);
   }
 
-  function nav(action) {
-    if (invokeNative(action)) return;
-    if (action === 'back') history.back();
-    else if (action === 'forward') history.forward();
-    else location.reload();
+  function goBack() {
+    var before = location.href;
+
+    if (window.history.length > 1) {
+      window.history.back();
+      setTimeout(function () {
+        if (location.href === before) fallbackBack();
+      }, 350);
+      return;
+    }
+
+    fallbackBack();
+  }
+
+  function goForward() {
+    if (window.history.length > 1) window.history.forward();
+  }
+
+  function reload() {
+    location.reload();
   }
 
   /* ---------------- 4. 悬浮按钮（Shadow DOM 隔离） ---------------- */
@@ -109,7 +156,9 @@
     forward:
       '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>',
     reload:
-      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 3.5v5.5H15"/></svg>'
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 3.5v5.5H15"/></svg>',
+    home:
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V21h13V9.5"/></svg>'
   };
 
   function build() {
@@ -139,8 +188,9 @@
       'button svg{display:block;pointer-events:none;}' +
       '</style>' +
       '<div class="wrap">' +
-      '<button data-act="back" title="后退 (Ctrl+[)">' + ICON.back + '</button>' +
-      '<button data-act="forward" title="前进 (Ctrl+])">' + ICON.forward + '</button>' +
+      '<button data-act="back" title="后退 (Alt+左 或 Ctrl+[)">' + ICON.back + '</button>' +
+      '<button data-act="forward" title="前进 (Alt+右 或 Ctrl+])">' + ICON.forward + '</button>' +
+      '<button data-act="home" title="回到首页">' + ICON.home + '</button>' +
       '<button data-act="reload" title="刷新 (Ctrl+R)">' + ICON.reload + '</button>' +
       '</div>';
 
@@ -156,7 +206,11 @@
         var t = e.target;
         var btn = t && t.closest ? t.closest('button[data-act]') : null;
         if (!btn) return;
-        nav(btn.getAttribute('data-act'));
+        var act = btn.getAttribute('data-act');
+        if (act === 'back') goBack();
+        else if (act === 'forward') goForward();
+        else if (act === 'home') location.href = HOME;
+        else if (act === 'reload') reload();
       },
       true
     );
@@ -174,18 +228,17 @@
     build();
   }
 
-  /* ---------------- 5. Windows 习惯快捷键兜底 ---------------- */
+  /* ---------------- 5. 快捷键兜底 ---------------- */
 
   document.addEventListener(
     'keydown',
     function (e) {
-      if (!e.altKey) return;
-      if (e.key === 'ArrowLeft') {
+      if (e.altKey && e.key === 'ArrowLeft') {
         e.preventDefault();
-        nav('back');
-      } else if (e.key === 'ArrowRight') {
+        goBack();
+      } else if (e.altKey && e.key === 'ArrowRight') {
         e.preventDefault();
-        nav('forward');
+        goForward();
       }
     },
     true
